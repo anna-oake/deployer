@@ -8,6 +8,7 @@ export GITHUB_REPO=anna-oake/nixos-config
 export HOSTS=eule,star
 export ATTIC_SERVER=attic.oa.ke
 export ATTIC_CACHE=nixos
+export ATTIC_TOKEN_FILE=/run/agenix/lxc-builder/deploy-attic-token
 export DATA_PATH=/var/lib/deployer # optional
 export INTERVAL=60s               # optional; Go duration
 
@@ -28,7 +29,8 @@ not deployed.
 | `DATA_PATH` | `/var/lib/deployer` | Absolute service-owned data directory |
 | `HOSTS` | required | Comma-separated configuration/node names |
 | `ATTIC_SERVER` | required | Attic server domain or HTTP(S) URL without a path |
-| `ATTIC_CACHE` | required | Public Attic cache name |
+| `ATTIC_CACHE` | required | Attic cache name |
+| `ATTIC_TOKEN_FILE` | unset | File containing a raw Attic token; required for private caches |
 | `INTERVAL` | `60s` | Positive Go duration |
 
 A bare server domain uses HTTPS. `ATTIC_CACHE` is required, with no default.
@@ -40,6 +42,13 @@ explicitly supports `HEAD /<cache>/<store-path-hash>.narinfo`. This service uses
 HEAD only: 200 means ready, 404 means not ready yet, and other statuses are logged
 as errors and retried next poll. There is no GET fallback. Readiness is a cache
 presence check, not a GitHub Actions status check or a recursive closure audit.
+
+For a private cache, `ATTIC_TOKEN_FILE` contains just the raw token (a trailing
+newline is fine). The service reads it at startup and sends `Authorization:
+Bearer <token>` on HEAD requests. The token needs pull access to `ATTIC_CACHE`;
+it is never saved in `state.json`. Restart after rotating it. The NixOS module
+requires `atticTokenFile` and passes it through a systemd credential. Nix downloads
+still use Nix's own authentication, such as your existing `netrc-file` setting.
 
 Polling starts immediately, then runs every interval. Polls never overlap; if a
 poll takes longer than the interval, the next poll runs when it finishes. Each
@@ -95,12 +104,14 @@ NixOS configuration:
 
 ```nix
 { config, ... }: {
+  age.secrets."lxc-builder/deploy-attic-token" = { };
   services.deployer = {
     enable = true;
     githubRepo = "anna-oake/nixos-config";
     hosts = [ "eule" "star" ];
     atticServer = "attic.oa.ke";
     atticCache = "nixos";
+    atticTokenFile = config.age.secrets."lxc-builder/deploy-attic-token".path;
     sshKeyFile = config.age.secrets.deployer-ssh-key.path;
     # interval = "60s";
     # dataPath = "/var/lib/deployer";

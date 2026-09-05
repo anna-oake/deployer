@@ -426,3 +426,69 @@ func TestPruneState(t *testing.T) {
 		t.Fatalf("unexpected retained state: %+v", persisted)
 	}
 }
+
+func TestAtticTokenFile(t *testing.T) {
+	for key, value := range map[string]string{
+		"GITHUB_REPO": "owner/repo", "HOSTS": "eule", "ATTIC_SERVER": "attic.example",
+		"ATTIC_CACHE": "nixos", "DATA_PATH": t.TempDir(), "INTERVAL": "60s",
+	} {
+		t.Setenv(key, value)
+	}
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	t.Setenv("ATTIC_TOKEN_FILE", tokenFile)
+	if _, err := readConfig(); err == nil {
+		t.Fatal("missing token file accepted")
+	}
+	for _, invalid := range []string{"", "\n", "token\nsecond-line"} {
+		if err := os.WriteFile(tokenFile, []byte(invalid), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readConfig(); err == nil {
+			t.Fatal("invalid token file accepted")
+		}
+	}
+	const token = "test-attic-token"
+	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := readConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != "HEAD" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	c.Attic = server.URL
+	s := service{config: c, state: newState(c.Repo), client: server.Client()}
+	if ready, err := s.ready(context.Background(), testPath); err != nil || !ready {
+		t.Fatalf("authenticated HEAD: ready=%v err=%v", ready, err)
+	}
+	s.config.AtticToken = ""
+	if ready, err := s.ready(context.Background(), testPath); err == nil || ready {
+		t.Fatal("unauthenticated HEAD should fail")
+	}
+	if calls != 2 {
+		t.Fatalf("unexpected retries: %d", calls)
+	}
+	s.config.AtticToken = token
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(c.DataPath, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(token)) {
+		t.Fatal("token persisted in state")
+	}
+}

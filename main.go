@@ -23,6 +23,7 @@ import (
 
 type config struct {
 	Repo, DataPath, Attic, AtticCache string
+	AtticToken                        string
 	Hosts                             []string
 	Interval                          time.Duration
 }
@@ -71,6 +72,16 @@ func readConfig() (config, error) {
 	c.Attic = strings.TrimRight(u.String(), "/")
 	if !cachePattern.MatchString(c.AtticCache) {
 		return c, errors.New("ATTIC_CACHE is required and must be a cache name (letters, digits, underscores or hyphens)")
+	}
+	if tokenFile := os.Getenv("ATTIC_TOKEN_FILE"); tokenFile != "" {
+		data, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return c, fmt.Errorf("read ATTIC_TOKEN_FILE: %w", err)
+		}
+		c.AtticToken = strings.TrimSpace(string(data))
+		if c.AtticToken == "" || strings.ContainsAny(c.AtticToken, " \t\r\n") {
+			return c, errors.New("ATTIC_TOKEN_FILE must contain a non-empty token without whitespace")
+		}
 	}
 	interval := os.Getenv("INTERVAL")
 	if interval == "" {
@@ -223,6 +234,9 @@ func (s *service) ready(ctx context.Context, path string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, s.cacheURL()+"/"+match[1]+".narinfo", nil)
 	if err != nil {
 		return false, err
+	}
+	if s.config.AtticToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.config.AtticToken)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
